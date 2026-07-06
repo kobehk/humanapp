@@ -7,7 +7,14 @@ import type { ServerToClientEvents, ClientToServerEvents, Prompt, AnswerType } f
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>
 
-const USER_ID_KEY = 'jiawu_user_id'
+const USER_ID_KEY = 'jiaban_user_id'
+const historyCacheKey = (uid: string) => `jiaban_history_${uid}`
+const HISTORY_TTL = 60 * 60 * 1000 // 1 hour — matches privacy policy retention
+
+function pruneExpired(history: ReceivedAnswer[]): ReceivedAnswer[] {
+  const cutoff = Date.now() - HISTORY_TTL
+  return history.filter((a) => a.receivedAt > cutoff)
+}
 
 function getOrCreateUserId(): string {
   let id = sessionStorage.getItem(USER_ID_KEY)
@@ -18,26 +25,52 @@ function getOrCreateUserId(): string {
   return id
 }
 
+function saveHistoryCache(userId: string, history: ReceivedAnswer[]) {
+  try { sessionStorage.setItem(historyCacheKey(userId), JSON.stringify(history)) } catch {}
+}
+
+function loadHistoryCache(userId: string): ReceivedAnswer[] {
+  try {
+    const raw = sessionStorage.getItem(historyCacheKey(userId))
+    const parsed: ReceivedAnswer[] = raw ? (JSON.parse(raw) as ReceivedAnswer[]) : []
+    const pruned = pruneExpired(parsed)
+    if (pruned.length !== parsed.length) {
+      saveHistoryCache(userId, pruned)
+    }
+    return pruned
+  } catch { return [] }
+}
+
+function clearHistoryCache(userId: string) {
+  try { sessionStorage.removeItem(historyCacheKey(userId)) } catch {}
+}
+
 export interface ReceivedAnswer {
   promptId: string
   content: string
   answerType: AnswerType
   promptText: string
+  receivedAt: number
 }
 
 export function useSocket() {
   const socketRef = useRef<AppSocket | null>(null)
+  const userIdRef = useRef<string | null>(null)
   const [connected, setConnected] = useState(false)
   const [credits, setCredits] = useState(6)
+  const [lastRefillAt, setLastRefillAt] = useState(Date.now())
   const [onlineCount, setOnlineCount] = useState({ total: 0, human: 0, ai: 0 })
   const [assignedPrompt, setAssignedPrompt] = useState<Prompt | null>(null)
-  const [receivedAnswer, setReceivedAnswer] = useState<ReceivedAnswer | null>(null)
+  const [answerHistory, setAnswerHistory] = useState<ReceivedAnswer[]>([])
   const [pendingPrompt, setPendingPrompt] = useState<{ id: string; text: string; answerType: AnswerType } | null>(null)
   const [isLarping, setIsLarping] = useState(false)
 
-  // Keep pendingPrompt in ref so answer_received handler can read answerType
   const pendingPromptRef = useRef(pendingPrompt)
   useEffect(() => { pendingPromptRef.current = pendingPrompt }, [pendingPrompt])
+
+  // Keep history in ref so callbacks can append without stale closure
+  const answerHistoryRef = useRef(answerHistory)
+  useEffect(() => { answerHistoryRef.current = answerHistory }, [answerHistory])
 
   useEffect(() => {
     const socket: AppSocket = io({ path: '/api/socket' })
@@ -46,41 +79,69 @@ export function useSocket() {
     socket.on('connect', () => {
       setConnected(true)
       const userId = getOrCreateUserId()
+      userIdRef.current = userId
       socket.emit('identify', userId)
     })
 
     socket.on('disconnect', () => setConnected(false))
 
     socket.on('restore_state', (state) => {
+      const userId = userIdRef.current
       setCredits(state.credits)
-      setPendingPrompt(state.pendingPrompt)
+      setLastRefillAt(state.lastRefillAt)
       setAssignedPrompt(state.assignedPrompt)
       setIsLarping(state.isLarping)
+
       if (state.pendingAnswer) {
-        const answerType = state.pendingPrompt?.answerType ?? 'text'
-        setReceivedAnswer({
+        const answerType = state.pendingAnswer.answerType ?? state.pendingPrompt?.answerType ?? 'text'
+        const answer: ReceivedAnswer = {
           promptId: state.pendingAnswer.promptId,
           content: state.pendingAnswer.content,
           answerType,
           promptText: state.pendingAnswer.promptText,
-        })
+          receivedAt: state.pendingAnswer.answeredAt ?? Date.now(),
+        }
+        const cached = userId ? loadHistoryCache(userId) : []
+        const merged = [...cached, answer]
+        setAnswerHistory(merged)
         setPendingPrompt(null)
+        if (userId) saveHistoryCache(userId, merged)
+      } else if (state.pendingPrompt) {
+        setPendingPrompt(state.pendingPrompt)
+        // keep existing history, just don't add to it while waiting
+      } else {
+        setPendingPrompt(null)
+        if (userId) {
+          const cached = loadHistoryCache(userId)
+          setAnswerHistory(cached)
+        }
       }
     })
 
-    socket.on('credits_update', setCredits)
+    socket.on('credits_update', ({ credits, lastRefillAt }) => {
+      setCredits(credits)
+      setLastRefillAt(lastRefillAt)
+    })
     socket.on('online_count', setOnlineCount)
     socket.on('prompt_assigned', (prompt) => {
       setAssignedPrompt(prompt)
     })
+    socket.on('prompt_expired', () => {
+      setAssignedPrompt(null)
+    })
     socket.on('answer_received', (answer) => {
-      setReceivedAnswer({
+      const received: ReceivedAnswer = {
         promptId: answer.promptId,
         content: answer.content,
         answerType: pendingPromptRef.current?.answerType ?? 'text',
         promptText: pendingPromptRef.current?.text ?? answer.promptText,
-      })
+        receivedAt: Date.now(),
+      }
+      const next = [...pruneExpired(answerHistoryRef.current), received]
+      setAnswerHistory(next)
       setPendingPrompt(null)
+      const userId = userIdRef.current
+      if (userId) saveHistoryCache(userId, next)
     })
 
     return () => { socket.disconnect() }
@@ -88,9 +149,7 @@ export function useSocket() {
 
   const submitPrompt = useCallback((text: string, answerType: AnswerType, thinking: boolean) => {
     socketRef.current?.emit('submit_prompt', { text, answerType, thinking })
-    // id will be confirmed via restore_state on reconnect; use placeholder for now
     setPendingPrompt({ id: '', text, answerType })
-    setReceivedAnswer(null)
   }, [])
 
   const cancelPrompt = useCallback(() => {
@@ -118,12 +177,22 @@ export function useSocket() {
     socketRef.current?.emit('vote', { promptId, vote: v })
   }, [])
 
+  const report = useCallback((promptId: string, answerContent: string, promptText: string) => {
+    socketRef.current?.emit('report', { promptId, answerContent, promptText })
+  }, [])
+
+  const clearHistory = useCallback(() => {
+    setAnswerHistory([])
+    if (userIdRef.current) clearHistoryCache(userIdRef.current)
+  }, [])
+
   return {
     connected,
     credits,
+    lastRefillAt,
     onlineCount,
     assignedPrompt,
-    receivedAnswer,
+    answerHistory,
     pendingPrompt,
     isLarping,
     submitPrompt,
@@ -132,6 +201,7 @@ export function useSocket() {
     skipPrompt,
     startLarp,
     vote,
-    clearAnswer: () => setReceivedAnswer(null),
+    report,
+    clearHistory,
   }
 }

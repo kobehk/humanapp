@@ -1,11 +1,5 @@
 import type { Metadata } from "next";
-import { Nunito } from "next/font/google";
 import "./globals.css";
-
-const nunito = Nunito({
-  subsets: ["latin"],
-  variable: "--font-nunito",
-});
 
 export const metadata: Metadata = {
   title: "假扮 AI",
@@ -18,8 +12,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh" className={`${nunito.variable} h-full`}>
-      <body className="min-h-full flex flex-col" style={{ fontFamily: 'var(--font-nunito), cursive' }}>
+    <html lang="zh" className="h-full">
+      <body className="min-h-full flex flex-col" style={{ fontFamily: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif' }}>
         {children}
       </body>
     </html>

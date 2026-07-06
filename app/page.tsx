@@ -7,7 +7,8 @@ import { LarpTab } from '@/components/larp-tab'
 import { useSocket } from '@/lib/use-socket'
 import type { Tab } from '@/lib/types'
 
-const CONSENT_KEY = 'jiawu_consented'
+const CONSENT_KEY = 'jiaban_consented'
+const TAB_KEY = 'jiaban_tab'
 
 export default function Home() {
   const [consented, setConsented] = useState<boolean | null>(null)
@@ -16,9 +17,10 @@ export default function Home() {
 
   const {
     credits,
+    lastRefillAt,
     onlineCount,
     assignedPrompt,
-    receivedAnswer,
+    answerHistory,
     pendingPrompt,
     isLarping,
     submitPrompt,
@@ -27,12 +29,14 @@ export default function Home() {
     skipPrompt,
     startLarp,
     vote,
-    clearAnswer,
+    report,
   } = useSocket()
 
   useEffect(() => {
     const stored = localStorage.getItem(CONSENT_KEY)
     setConsented(stored === 'true')
+    const savedTab = localStorage.getItem(TAB_KEY)
+    if (savedTab === 'larp' || savedTab === 'human') setTab(savedTab as Tab)
   }, [])
 
   const handleEnter = () => {
@@ -61,7 +65,7 @@ export default function Home() {
       {/* Tabs */}
       <div className="flex border-b-2 border-gray-200 relative">
         <button
-          onClick={() => setTab('human')}
+          onClick={() => { setTab('human'); localStorage.setItem(TAB_KEY, 'human') }}
           className="flex-1 py-4 text-base font-medium transition-colors"
           style={{
             background: tab === 'human' ? '#c8dfc8' : '#f0f0f0',
@@ -70,7 +74,7 @@ export default function Home() {
           普通人
         </button>
         <button
-          onClick={() => setTab('larp')}
+          onClick={() => { setTab('larp'); localStorage.setItem(TAB_KEY, 'larp') }}
           className="flex-1 py-4 text-base font-medium transition-colors"
           style={{
             background: tab === 'larp' ? '#e8e0f0' : '#f8f8f8',
@@ -83,7 +87,7 @@ export default function Home() {
           className="absolute top-2 right-2 px-2 py-1 text-xs font-mono rounded border border-gray-800"
           style={{ background: '#fde68a' }}
         >
-          {credits}/6c
+          {credits}/6 积分
         </div>
       </div>
 
@@ -111,12 +115,13 @@ export default function Home() {
         {tab === 'human' ? (
           <HumanTab
             credits={credits}
+            lastRefillAt={lastRefillAt}
             pendingPrompt={pendingPrompt}
-            receivedAnswer={receivedAnswer}
+            answerHistory={answerHistory}
             onSubmit={submitPrompt}
             onCancel={cancelPrompt}
-            onVote={(v) => vote(receivedAnswer?.promptId ?? '', v)}
-            onClearAnswer={clearAnswer}
+            onVote={(promptId, v) => vote(promptId, v)}
+            onReport={report}
           />
         ) : (
           <LarpTab

@@ -1,38 +1,49 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import type { AnswerType } from '@/lib/types'
 import { DrawingCanvas } from './drawing-canvas'
 
 interface ReceivedAnswer {
+  promptId: string
   content: string
   answerType: AnswerType
   promptText: string
+  receivedAt: number
 }
 
 interface Props {
   credits: number
+  lastRefillAt: number
   pendingPrompt: { text: string; answerType: AnswerType } | null
-  receivedAnswer: ReceivedAnswer | null
+  answerHistory: ReceivedAnswer[]
   onSubmit: (text: string, answerType: AnswerType, thinking: boolean) => void
   onCancel: () => void
-  onVote: (v: 'up' | 'down') => void
-  onClearAnswer: () => void
+  onVote: (promptId: string, v: 'up' | 'down') => void
+  onReport: (promptId: string, answerContent: string, promptText: string) => void
 }
 
 export function HumanTab({
   credits,
+  lastRefillAt,
   pendingPrompt,
-  receivedAnswer,
+  answerHistory,
   onSubmit,
   onCancel,
   onVote,
-  onClearAnswer,
+  onReport,
 }: Props) {
   const [answerType, setAnswerType] = useState<AnswerType>('text')
   const [thinking, setThinking] = useState(false)
   const [text, setText] = useState('')
+  const [reportedIds, setReportedIds] = useState<Set<string>>(new Set())
   const MAX_LEN = 300
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Scroll to bottom when new answer arrives
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [answerHistory.length, pendingPrompt])
 
   const handleSubmit = () => {
     const trimmed = text.trim()
@@ -41,86 +52,65 @@ export function HumanTab({
     setText('')
   }
 
-  // Waiting state: prompt submitted, no answer yet
-  if (pendingPrompt) {
-    return (
-      <div className="flex flex-col items-center justify-center flex-1 gap-4 px-4">
-        <div className="text-center">
-          <div className="text-4xl mb-4 animate-pulse">🧠</div>
-          <p className="text-gray-400 text-sm">正在等待回答...</p>
-          <div className="mt-3 px-4 py-2 bg-gray-100 rounded-xl text-sm text-gray-600 max-w-xs">
-            &ldquo;{pendingPrompt.text}&rdquo;
-          </div>
-        </div>
-        <button
-          onClick={onCancel}
-          className="text-gray-400 text-sm underline"
-        >
-          取消
-        </button>
-      </div>
-    )
-  }
+  const hasHistory = answerHistory.length > 0
 
-  // Answer received state
-  if (receivedAnswer) {
+  // Chat + input layout
+  if (hasHistory || pendingPrompt) {
     return (
-      <div className="flex flex-col flex-1 gap-4 px-4 py-4">
-        {/* User's prompt bubble */}
-        <div className="flex justify-end">
-          <div className="bg-green-50 border border-green-200 rounded-2xl px-4 py-3 max-w-xs text-sm">
-            <p className="text-gray-400 text-xs mb-1">
-              你要求了{receivedAnswer.answerType === 'text' ? '文字' : '图片'}
-            </p>
-            <p>{receivedAnswer.promptText}</p>
-          </div>
-        </div>
-
-        {/* Answer bubble */}
-        <div className="bg-purple-50 border border-purple-200 rounded-2xl px-4 py-4 max-w-sm">
-          <p className="text-xs text-gray-400 mb-2">&ldquo;AI&rdquo; 回答了</p>
-          {receivedAnswer.answerType === 'image' ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={receivedAnswer.content} alt="AI drawing" className="w-full rounded-lg" />
-          ) : (
-            <p className="text-base font-medium">{receivedAnswer.content}</p>
-          )}
-          <div className="flex items-center gap-3 mt-3">
-            <button onClick={() => onVote('up')} className="text-xl hover:scale-110 transition-transform">👍</button>
-            <button onClick={() => onVote('down')} className="text-xl hover:scale-110 transition-transform">👎</button>
-            <button className="text-sm text-purple-600 underline ml-1">为什么？</button>
-            <button
-              className="text-sm px-3 py-1 rounded-lg text-white"
-              style={{ background: '#9b5de5' }}
-              onClick={() => {
-                if (navigator.share) {
-                  navigator.share({ text: receivedAnswer.content })
-                }
+      <div className="flex flex-col flex-1 overflow-hidden">
+        {/* Scrollable chat area */}
+        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
+          {answerHistory.map((item) => (
+            <AnswerPair
+              key={item.promptId}
+              item={item}
+              reported={reportedIds.has(item.promptId)}
+              onVote={(v: 'up' | 'down') => onVote(item.promptId, v)}
+              onReport={(promptId, content, promptText) => {
+                onReport(promptId, content, promptText)
+                setReportedIds((prev) => new Set(prev).add(promptId))
               }}
-            >
-              分享
-            </button>
-            <button
-              className="text-sm px-3 py-1 rounded-lg border border-red-400 text-red-500"
-              onClick={onClearAnswer}
-            >
-              举报
-            </button>
-          </div>
+            />
+          ))}
+
+          {/* Pending bubble */}
+          {pendingPrompt && (
+            <div className="flex flex-col gap-2">
+              <div className="flex justify-end">
+                <div className="bg-green-50 border border-green-200 rounded-2xl px-4 py-3 max-w-xs text-sm">
+                  <p className="text-gray-400 text-xs mb-1">
+                    {pendingPrompt.answerType === 'text' ? '要求用文字作答' : '要求用图片作答'}
+                  </p>
+                  <p>{pendingPrompt.text}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-gray-400 text-sm">
+                <span className="animate-pulse">🧠</span>
+                <span>正在等待回答...</span>
+                <button onClick={onCancel} className="text-xs underline ml-1">取消</button>
+              </div>
+            </div>
+          )}
+
+          <div ref={bottomRef} />
         </div>
 
-        {/* Input area for next question */}
-        <PromptInput
-          text={text}
-          setText={setText}
-          answerType={answerType}
-          setAnswerType={setAnswerType}
-          thinking={thinking}
-          setThinking={setThinking}
-          credits={credits}
-          onSubmit={handleSubmit}
-          maxLen={MAX_LEN}
-        />
+        {/* Input area pinned to bottom */}
+        <div className="px-4 pb-4 pt-2 border-t border-gray-100">
+          <PromptInput
+            text={text}
+            setText={setText}
+            answerType={answerType}
+            setAnswerType={setAnswerType}
+            thinking={thinking}
+            setThinking={setThinking}
+            credits={credits}
+            lastRefillAt={lastRefillAt}
+            onSubmit={handleSubmit}
+            maxLen={MAX_LEN}
+            disabled={!!pendingPrompt}
+          />
+        </div>
       </div>
     )
   }
@@ -128,15 +118,12 @@ export function HumanTab({
   // Default: idle state
   return (
     <div className="flex flex-col flex-1">
-      {/* Center illustration */}
       <div className="flex flex-col items-center justify-center flex-1 gap-3 px-8 text-center">
         <ScribbleIcon />
         <h1 className="text-2xl font-bold mt-2">假扮 AI</h1>
         <p className="text-gray-400 text-xs">?</p>
         <p className="text-gray-400 text-sm">SOTA 大模型，每隔一段时间输出 100 万个 token。</p>
       </div>
-
-      {/* Input area */}
       <div className="px-4 pb-4">
         <PromptInput
           text={text}
@@ -146,9 +133,68 @@ export function HumanTab({
           thinking={thinking}
           setThinking={setThinking}
           credits={credits}
+          lastRefillAt={lastRefillAt}
           onSubmit={handleSubmit}
           maxLen={MAX_LEN}
         />
+      </div>
+    </div>
+  )
+}
+
+function AnswerPair({
+  item,
+  reported,
+  onVote,
+  onReport,
+}: {
+  item: ReceivedAnswer
+  reported: boolean
+  onVote: (v: 'up' | 'down') => void
+  onReport: (promptId: string, content: string, promptText: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      {/* User prompt bubble */}
+      <div className="flex justify-end">
+        <div className="bg-green-50 border border-green-200 rounded-2xl px-4 py-3 max-w-xs text-sm">
+          <p className="text-gray-400 text-xs mb-1">
+            {item.answerType === 'text' ? '要求用文字作答' : '要求用图片作答'}
+          </p>
+          <p>{item.promptText}</p>
+        </div>
+      </div>
+
+      {/* Answer bubble */}
+      <div className="bg-purple-50 border border-purple-200 rounded-2xl px-4 py-4 max-w-sm">
+        <p className="text-xs text-gray-400 mb-2">&ldquo;AI&rdquo; 回答了</p>
+        {item.answerType === 'image' ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={item.content} alt="AI drawing" className="w-full rounded-lg" />
+        ) : (
+          <p className="text-base font-medium">{item.content}</p>
+        )}
+        <div className="flex items-center gap-3 mt-3 flex-wrap">
+          <button onClick={() => onVote('up')} className="text-xl hover:scale-110 transition-transform">👍</button>
+          <button onClick={() => onVote('down')} className="text-xl hover:scale-110 transition-transform">👎</button>
+          <button
+            className="text-sm px-3 py-1 rounded-lg text-white"
+            style={{ background: '#9b5de5' }}
+            onClick={() => {
+              if (navigator.share) navigator.share({ text: item.content })
+            }}
+          >
+            分享
+          </button>
+          <button
+            className="text-sm px-3 py-1 rounded-lg border disabled:opacity-40"
+            style={{ borderColor: reported ? '#d0d0d0' : '#f87171', color: reported ? '#d0d0d0' : '#ef4444' }}
+            disabled={reported}
+            onClick={() => onReport(item.promptId, item.content, item.promptText)}
+          >
+            {reported ? '已举报' : '举报'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -162,25 +208,45 @@ interface PromptInputProps {
   thinking: boolean
   setThinking: (v: boolean) => void
   credits: number
+  lastRefillAt: number
   onSubmit: () => void
   maxLen: number
+  disabled?: boolean
 }
+
+const REFILL_INTERVAL = 10 * 60 * 1000
+const REFILL_AMOUNT = 2
+const CREDITS_MAX = 6
 
 function PromptInput({
   text, setText, answerType, setAnswerType,
   thinking, setThinking,
-  credits, onSubmit, maxLen,
+  credits, lastRefillAt, onSubmit, maxLen, disabled,
 }: PromptInputProps) {
   const cost = thinking ? 2 : 1
   const canAfford = credits >= cost
 
+  const [secsToRefill, setSecsToRefill] = useState(0)
+
+  useEffect(() => {
+    if (credits >= CREDITS_MAX) { setSecsToRefill(0); return }
+    const calc = () => {
+      const elapsed = Date.now() - lastRefillAt
+      const msToNext = REFILL_INTERVAL - (elapsed % REFILL_INTERVAL)
+      setSecsToRefill(Math.ceil(msToNext / 1000))
+    }
+    calc()
+    const id = setInterval(calc, 1000)
+    return () => clearInterval(id)
+  }, [credits, lastRefillAt])
+
   return (
     <div className="flex flex-col gap-2">
-      {/* Mode buttons */}
       <div className="flex gap-2">
         <button
           onClick={() => setAnswerType('text')}
-          className="px-4 py-2 rounded-xl text-sm font-medium transition-all"
+          disabled={disabled}
+          className="px-4 py-2 rounded-xl text-sm font-medium transition-all disabled:opacity-40"
           style={{
             background: answerType === 'text' ? '#fde68a' : 'transparent',
             border: '2px solid',
@@ -192,7 +258,8 @@ function PromptInput({
         </button>
         <button
           onClick={() => setAnswerType('image')}
-          className="px-4 py-2 rounded-xl text-sm font-medium transition-all"
+          disabled={disabled}
+          className="px-4 py-2 rounded-xl text-sm font-medium transition-all disabled:opacity-40"
           style={{
             background: answerType === 'image' ? '#fbcfe8' : 'transparent',
             border: '2px solid',
@@ -204,11 +271,11 @@ function PromptInput({
         </button>
       </div>
 
-      {/* Thinking toggle — inline expand */}
       <div>
         <button
           onClick={() => setThinking(!thinking)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm transition-all"
+          disabled={disabled}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm transition-all disabled:opacity-40"
           style={{
             background: thinking ? '#fbcfe8' : 'transparent',
             border: '2px solid',
@@ -216,30 +283,31 @@ function PromptInput({
             boxShadow: thinking ? '2px 2px 0 #1a1a1a' : 'none',
           }}
         >
-          🧠 {thinking ? 'thinking (2c)' : '(2c)'}
+          🧠 {thinking ? 'thinking (2积分)' : '(2积分)'}
         </button>
         {thinking && (
-          <div className="mt-1">
-            <p className="text-sm text-gray-500">让 AI 多 2 倍时间思考，花费 2 倍积分</p>
-            {credits < 2 && (
-              <p className="text-sm font-mono" style={{ color: '#e85d04' }}>
-                你扮演 AI 的次数还不够（需要 2c）
-              </p>
-            )}
-          </div>
+          <p className="text-sm text-gray-500 mt-1">让 AI 多 2 倍时间思考，花费 2 倍积分</p>
         )}
       </div>
 
-      {/* Text input row */}
+      {!canAfford && (
+        <p className="text-sm" style={{ color: '#e85d04' }}>
+          积分不足（需要 {cost} 积分）
+          {secsToRefill > 0 && <>，{secsToRefill} 秒后补充 {REFILL_AMOUNT} 积分</>}
+          ，去扮演 AI 回答问题可以获得积分
+        </p>
+      )}
+
       <div className="flex gap-2 items-center">
         <div className="flex-1 relative">
           <input
             type="text"
             value={text}
+            disabled={disabled}
             onChange={(e) => setText(e.target.value.slice(0, maxLen))}
-            onKeyDown={(e) => e.key === 'Enter' && canAfford && onSubmit()}
-            placeholder={answerType === 'image' ? '画一匹马' : '草莓的英文里有几个 R？'}
-            className="w-full px-4 py-3 rounded-full border-2 border-gray-800 outline-none text-sm"
+            onKeyDown={(e) => e.key === 'Enter' && canAfford && !disabled && onSubmit()}
+            placeholder={disabled ? '等待回答中...' : answerType === 'image' ? '画一匹马' : '草莓的英文里有几个 R？'}
+            className="w-full px-4 py-3 rounded-full border-2 border-gray-800 outline-none text-sm disabled:opacity-40"
             style={{ paddingRight: '3.5rem' }}
           />
           <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-300">
@@ -247,12 +315,11 @@ function PromptInput({
           </span>
         </div>
 
-        {/* Send button */}
         <button
           onClick={onSubmit}
-          disabled={!text.trim() || !canAfford}
+          disabled={!text.trim() || !canAfford || disabled}
           className="w-10 h-10 rounded-full border-2 border-gray-300 flex items-center justify-center transition-all"
-          style={{ opacity: !text.trim() || !canAfford ? 0.4 : 1 }}
+          style={{ opacity: !text.trim() || !canAfford || disabled ? 0.4 : 1 }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="22" y1="2" x2="11" y2="13" />
@@ -260,9 +327,8 @@ function PromptInput({
           </svg>
         </button>
 
-        {/* Credits badge */}
         <button className="flex items-center gap-1 px-3 py-2 rounded-xl border-2 border-gray-800 text-sm font-medium sketch-style">
-          🌿 {credits}c
+          🌿 {credits} 积分
         </button>
       </div>
     </div>
