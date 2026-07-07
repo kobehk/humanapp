@@ -68,7 +68,7 @@ export default function Home() {
       {!consented && <EntryGate onEnter={handleEnter} />}
 
       {/* Tabs */}
-      <div className="flex border-b-2 border-gray-200 relative">
+      <div className="flex items-center border-b-2 border-gray-200">
         <button
           onClick={() => { setTab('human'); localStorage.setItem(TAB_KEY, 'human') }}
           className="flex-1 py-4 text-base font-medium transition-colors"
@@ -89,10 +89,10 @@ export default function Home() {
         </button>
 
         <div
-          className="absolute top-2 right-2 px-2 py-1 text-xs font-mono rounded border border-gray-800"
+          className="shrink-0 px-2 py-1 mx-2 text-xs font-mono rounded border border-gray-800"
           style={{ background: '#fde68a' }}
         >
-          {credits}/6 积分
+          {credits}/6
         </div>
       </div>
 
