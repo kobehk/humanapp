@@ -14,7 +14,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh" className="h-full">
-      <body className="min-h-full flex flex-col" style={{ fontFamily: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif' }}>
+      <body className="h-full flex flex-col overflow-hidden" style={{ fontFamily: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif' }}>
         {children}
         {/* 百度统计 */}
         <Script id="baidu-tongji" strategy="afterInteractive">

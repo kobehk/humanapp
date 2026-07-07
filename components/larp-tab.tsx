@@ -22,32 +22,49 @@ interface Props {
 export function LarpTab({ assignedPrompt, onSubmitAnswer, onSkip, onStartLarp, isLarping }: Props) {
   const [answer, setAnswer] = useState('')
   const [timeLeft, setTimeLeft] = useState(ANSWER_TIME)
+  const [waitElapsed, setWaitElapsed] = useState(0)
   const [showDrawCanvas, setShowDrawCanvas] = useState(false)
   const [idleView, setIdleView] = useState<IdleView>('default')
   const [gallery, setGallery] = useState<GalleryItem[]>([])
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const answerStartRef = useRef<number>(0)
+  const waitStartRef = useRef<number>(0)
 
+  // Answer countdown — wall-clock based so it survives background/foreground
   useEffect(() => {
-    if (assignedPrompt) {
-      const total = assignedPrompt.thinking ? ANSWER_TIME_THINKING : ANSWER_TIME
-      setTimeLeft(total)
-      setAnswer('')
-      setShowDrawCanvas(assignedPrompt.answerType === 'image')
-      intervalRef.current = setInterval(() => {
-        setTimeLeft((t) => t <= 1 ? 0 : t - 1)
-      }, 1000)
+    if (!assignedPrompt) return
+    const total = assignedPrompt.thinking ? ANSWER_TIME_THINKING : ANSWER_TIME
+    answerStartRef.current = Date.now()
+    setTimeLeft(total)
+    setAnswer('')
+    setShowDrawCanvas(assignedPrompt.answerType === 'image')
+
+    const tick = () => {
+      const elapsed = Math.floor((Date.now() - answerStartRef.current) / 1000)
+      setTimeLeft(Math.max(0, total - elapsed))
     }
+    const id = setInterval(tick, 1000)
+    const onVisible = () => { if (!document.hidden) tick() }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [assignedPrompt])
 
-  // Timer hits 0: server will re-queue via assignment timeout, just clear local state
+  // Waiting elapsed — wall-clock based
   useEffect(() => {
-    if (timeLeft === 0 && assignedPrompt) {
-      clearInterval(intervalRef.current!)
+    if (!isLarping || assignedPrompt) return
+    waitStartRef.current = Date.now()
+    setWaitElapsed(0)
+    const tick = () => setWaitElapsed(Math.floor((Date.now() - waitStartRef.current) / 1000))
+    const id = setInterval(tick, 1000)
+    const onVisible = () => { if (!document.hidden) tick() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [timeLeft, assignedPrompt])
+  }, [isLarping, assignedPrompt])
 
   const openGallery = () => {
     setIdleView('gallery')
@@ -56,14 +73,12 @@ export function LarpTab({ assignedPrompt, onSubmitAnswer, onSkip, onStartLarp, i
 
   const handleTextSubmit = () => {
     if (!assignedPrompt || !answer.trim()) return
-    clearInterval(intervalRef.current!)
     onSubmitAnswer(assignedPrompt.id, answer.trim())
     setAnswer('')
   }
 
   const handleDrawSubmit = (dataUrl: string) => {
     if (!assignedPrompt) return
-    clearInterval(intervalRef.current!)
     addGalleryItem({ id: assignedPrompt.id, dataUrl, promptText: assignedPrompt.text, savedAt: Date.now() })
     onSubmitAnswer(assignedPrompt.id, dataUrl)
   }
@@ -117,7 +132,7 @@ export function LarpTab({ assignedPrompt, onSubmitAnswer, onSkip, onStartLarp, i
   // --- Idle: default view ---
   if (!isLarping) {
     return (
-      <div className="flex flex-col gap-4 px-4 py-6">
+      <div className="flex flex-col gap-4 px-4 py-6 flex-1 min-h-0 overflow-y-auto">
         <div className="border-2 border-gray-200 rounded-2xl p-6 text-center">
           <h2 className="text-2xl font-bold mb-2">变身机器</h2>
           <p className="text-gray-500 text-sm mb-3">
@@ -156,10 +171,13 @@ export function LarpTab({ assignedPrompt, onSubmitAnswer, onSkip, onStartLarp, i
 
   // --- Larping: waiting for prompt ---
   if (!assignedPrompt) {
+    const mins = Math.floor(waitElapsed / 60).toString().padStart(2, '0')
+    const secs = (waitElapsed % 60).toString().padStart(2, '0')
     return (
       <div className="flex flex-col items-center justify-center flex-1 gap-4 px-4 text-center">
         <div className="text-5xl animate-pulse">⏳</div>
         <p className="text-gray-500">等待提问中...</p>
+        <p className="text-2xl font-mono font-bold text-gray-700 tabular-nums">{mins}:{secs}</p>
         <p className="text-xs text-gray-400">当有人提问时，系统会自动分配给你</p>
         <button onClick={onSkip} className="text-gray-400 text-sm underline mt-4">
           停止扮演
@@ -201,7 +219,7 @@ export function LarpTab({ assignedPrompt, onSubmitAnswer, onSkip, onStartLarp, i
   }
 
   return (
-    <div className="flex flex-col gap-4 px-4 py-4">
+    <div className="flex flex-col gap-4 px-4 py-4 flex-1 min-h-0 overflow-y-auto">
       {/* Timer bar */}
       <div className="flex items-center gap-3">
         <div className="flex-1 bg-gray-100 rounded-full h-2">

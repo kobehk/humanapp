@@ -41,11 +41,20 @@ export function HumanTab({
   const MAX_LEN = 300
   const bottomRef = useRef<HTMLDivElement>(null)
 
+  const startRef = useRef<number>(0)
+
   useEffect(() => {
     if (!pendingPrompt) { setElapsed(0); return }
+    startRef.current = Date.now()
     setElapsed(0)
-    const t = setInterval(() => setElapsed((e) => e + 1), 1000)
-    return () => clearInterval(t)
+    const tick = () => setElapsed(Math.floor((Date.now() - startRef.current) / 1000))
+    const t = setInterval(tick, 1000)
+    const onVisible = () => { if (!document.hidden) tick() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [pendingPrompt])
 
   // Scroll to bottom when new answer arrives
@@ -126,12 +135,11 @@ export function HumanTab({
 
   // Default: idle state
   return (
-    <div className="flex flex-col flex-1">
+    <div className="flex flex-col flex-1 min-h-0 justify-between">
       <div className="flex flex-col items-center justify-center flex-1 gap-3 px-8 text-center">
         <ScribbleIcon />
         <h1 className="text-2xl font-bold mt-2">假扮 AI</h1>
-        <p className="text-gray-400 text-xs">?</p>
-        <p className="text-gray-400 text-sm">SOTA 大模型，每隔一段时间输出 100 万个 token。</p>
+        <p className="text-gray-400 text-sm">ai 抢了我们的工作，我们也抢 ai 的工作</p>
       </div>
       <div className="px-4 pb-4">
         <PromptInput

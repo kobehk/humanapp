@@ -1,6 +1,38 @@
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions'
 const MODEL = 'deepseek-v4-flash'
 
+export async function generateAIQuestion(): Promise<string> {
+  const apiKey = process.env.DEEPSEEK_API_KEY
+  if (!apiKey) return '如果你可以瞬间掌握任何一项技能，你会选择什么？'
+
+  try {
+    const res = await fetch(DEEPSEEK_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: '你在一个社交问答游戏中扮演提问者。请生成一个有趣、简短（50字以内）的开放性问题，让人忍不住想回答。不要带序号或引号，直接输出问题本身。话题可以是生活常识、脑洞、趣味、人生感悟等，但要轻松好玩。',
+          },
+          { role: 'user', content: '给我一个问题' },
+        ],
+        max_tokens: 100,
+        temperature: 0.9,
+      }),
+    })
+    if (!res.ok) return '如果你可以瞬间掌握任何一项技能，你会选择什么？'
+    const data = await res.json()
+    return data.choices?.[0]?.message?.content?.trim() || '如果你可以瞬间掌握任何一项技能，你会选择什么？'
+  } catch {
+    return '如果你可以瞬间掌握任何一项技能，你会选择什么？'
+  }
+}
+
 export async function generateAIAnswer(prompt: string): Promise<string> {
   const apiKey = process.env.DEEPSEEK_API_KEY
   if (!apiKey) {

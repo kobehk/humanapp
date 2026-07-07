@@ -3,7 +3,7 @@ import { Server as HttpServer } from 'http'
 import { v4 as uuidv4 } from 'uuid'
 import type { ServerToClientEvents, ClientToServerEvents, Prompt, AnswerType, RestoredState, Report } from './types'
 import { saveReport, isUserBanned } from './data-store'
-import { generateAIAnswer } from './ai-fallback'
+import { generateAIAnswer, generateAIQuestion } from './ai-fallback'
 
 const CREDITS_MAX = 6
 const CREDITS_REFILL_AMOUNT = 2
@@ -50,6 +50,7 @@ const activeAssignmentTimeouts = new Map<string, ReturnType<typeof setTimeout>>(
 const promptRegistry = new Map<string, Prompt>()       // promptId -> Prompt
 const waitingLarpers = new Set<string>()               // userIds waiting for a prompt
 const promptAnswerers = new Map<string, string>()      // promptId -> answerer userId
+const waitingLarperAITimers = new Map<string, ReturnType<typeof setTimeout>>() // userId -> AI question timer
 
 function getOrCreateUser(userId: string, socketId: string): UserState {
   let user = userState.get(userId)
@@ -93,6 +94,24 @@ function emitToUser(userId: string, fn: (socket: ReturnType<SocketIOServer['sock
   if (socket) fn(socket)
 }
 
+// Returns the count of online human users (not larping, not assigned)
+function getOnlineHumanCount(): number {
+  let count = 0
+  userState.forEach((user) => {
+    if (user.socketId && !user.isLarping && !user.assignedPromptId) count++
+  })
+  return count
+}
+
+// Returns count of online larpers (larping or assigned)
+function getOnlineLarperCount(): number {
+  let count = 0
+  userState.forEach((user) => {
+    if (user.socketId && (user.isLarping || user.assignedPromptId)) count++
+  })
+  return count
+}
+
 function getOnlineCounts() {
   let human = 0, ai = 0
   userState.forEach((user) => {
@@ -116,11 +135,15 @@ function broadcastOnlineCount() {
 
 function tryAssignPrompt(userId: string) {
   if (activeAssignments.has(userId)) return
-  if (promptQueue.length === 0) {
+  // Find first prompt not submitted by this user
+  const idx = promptQueue.findIndex(p => p.askerUserId !== userId)
+  if (idx === -1) {
     waitingLarpers.add(userId)
+    scheduleAIQuestion(userId)
     return
   }
-  const queued = promptQueue.shift()!
+  cancelAIQuestion(userId)
+  const [queued] = promptQueue.splice(idx, 1)
   clearTimeout(queued.timeout)
   activeAssignments.set(userId, queued.id)
   waitingLarpers.delete(userId)
@@ -140,12 +163,14 @@ function tryAssignPrompt(userId: string) {
     if (u) userState.set(userId, { ...u, assignedPromptId: null })
     // Notify answerer
     emitToUser(userId, (s) => s?.emit('prompt_expired'))
-    // Re-queue the prompt so another larper can pick it up
+    // Re-queue the prompt so another larper can pick it up (skip AI-generated prompts)
     const original = promptRegistry.get(queued.id)
-    if (original) {
+    if (original && original.askerUserId !== 'ai') {
       const timeout = scheduleAIFallback(original)
       promptQueue.push({ ...original, timeout })
       tryDispatchToWaitingLarper()
+    } else if (original) {
+      promptRegistry.delete(original.id)
     }
   }, timeoutMs)
   activeAssignmentTimeouts.set(userId, assignmentTimer)
@@ -165,7 +190,7 @@ function tryDispatchToWaitingLarper() {
   }
 }
 
-function scheduleAIFallback(prompt: Prompt): ReturnType<typeof setTimeout> {
+function scheduleAIFallback(prompt: Prompt, waitMs = HUMAN_WAIT_TIMEOUT): ReturnType<typeof setTimeout> {
   return setTimeout(() => {
     const idx = promptQueue.findIndex(p => p.id === prompt.id)
     if (idx === -1) return
@@ -193,7 +218,54 @@ function scheduleAIFallback(prompt: Prompt): ReturnType<typeof setTimeout> {
         }
       }
     }, delay)
-  }, HUMAN_WAIT_TIMEOUT)
+  }, waitMs)
+}
+
+// When a larper is waiting but there are no human questioners online, have AI generate a question for them
+const AI_QUESTION_DELAY_MIN = 15_000
+const AI_QUESTION_DELAY_MAX = 40_000
+
+function scheduleAIQuestion(userId: string) {
+  cancelAIQuestion(userId)
+  const delay = AI_QUESTION_DELAY_MIN + Math.random() * (AI_QUESTION_DELAY_MAX - AI_QUESTION_DELAY_MIN)
+  const timer = setTimeout(async () => {
+    waitingLarperAITimers.delete(userId)
+    // Only proceed if still waiting and not yet assigned
+    if (!waitingLarpers.has(userId)) return
+    if (activeAssignments.has(userId)) return
+    // If a real human has queued a prompt in the meantime, let normal flow handle it
+    if (promptQueue.length > 0) {
+      tryAssignPrompt(userId)
+      return
+    }
+    const question = await generateAIQuestion()
+    // Re-check after async call
+    if (!waitingLarpers.has(userId)) return
+    if (activeAssignments.has(userId)) return
+
+    const promptId = `ai-${Date.now()}-${userId}`
+    const prompt: Prompt = {
+      id: promptId,
+      text: question,
+      answerType: 'text',
+      thinking: false,
+      submittedAt: Date.now(),
+      askerUserId: 'ai',
+    }
+    promptRegistry.set(promptId, prompt)
+    // Assign directly — no timeout needed since this is an AI prompt
+    activeAssignments.set(userId, promptId)
+    waitingLarpers.delete(userId)
+    const user = userState.get(userId)
+    if (user) userState.set(userId, { ...user, assignedPromptId: promptId })
+    emitToUser(userId, (s) => s?.emit('prompt_assigned', prompt))
+  }, delay)
+  waitingLarperAITimers.set(userId, timer)
+}
+
+function cancelAIQuestion(userId: string) {
+  const t = waitingLarperAITimers.get(userId)
+  if (t) { clearTimeout(t); waitingLarperAITimers.delete(userId) }
 }
 
 export function initSocket(httpServer: HttpServer) {
@@ -305,7 +377,10 @@ export function initSocket(httpServer: HttpServer) {
         askerUserId: userId,
       }
 
-      const timeout = scheduleAIFallback(prompt)
+      // No larpers online — skip the human-wait window and fall back to AI immediately
+      const noLarpers = getOnlineLarperCount() === 0 && waitingLarpers.size === 0
+      const waitMs = noLarpers ? 0 : HUMAN_WAIT_TIMEOUT
+      const timeout = scheduleAIFallback(prompt, waitMs)
 
       promptQueue.push({ ...prompt, timeout })
       promptRegistry.set(promptId, prompt)
@@ -347,26 +422,28 @@ export function initSocket(httpServer: HttpServer) {
       // Deliver to asker (online or store for later)
       if (originalPrompt) {
         const askerUserId = originalPrompt.askerUserId
-        const askerUser = userState.get(askerUserId)
-        if (askerUser) {
-          const answer = {
-            promptId,
-            content,
-            answeredAt: Date.now(),
-            promptText: originalPrompt.text,
-            answerType: originalPrompt.answerType,
+        if (askerUserId !== 'ai') {
+          const askerUser = userState.get(askerUserId)
+          if (askerUser) {
+            const answer = {
+              promptId,
+              content,
+              answeredAt: Date.now(),
+              promptText: originalPrompt.text,
+              answerType: originalPrompt.answerType,
+            }
+            if (askerUser.socketId) {
+              emitToUser(askerUserId, (s) => s?.emit('answer_received', answer))
+            } else {
+              // Asker offline — store for delivery on reconnect
+              userState.set(askerUserId, { ...askerUser, pendingAnswer: answer })
+            }
+            userState.set(askerUserId, { ...userState.get(askerUserId)!, pendingPromptId: null })
           }
-          if (askerUser.socketId) {
-            emitToUser(askerUserId, (s) => s?.emit('answer_received', answer))
-          } else {
-            // Asker offline — store for delivery on reconnect
-            userState.set(askerUserId, { ...askerUser, pendingAnswer: answer })
-          }
-          userState.set(askerUserId, { ...userState.get(askerUserId)!, pendingPromptId: null })
         }
+        // For AI-generated prompts, just clean up the registry — no delivery needed
+        promptRegistry.delete(promptId)
       }
-
-      promptRegistry.delete(promptId)
       activeAssignments.delete(userId)
       let user = userState.get(userId)
       if (user) {
@@ -390,23 +467,25 @@ export function initSocket(httpServer: HttpServer) {
 
       // Case 1: waiting but not yet assigned
       if (waitingLarpers.has(userId) && !user.assignedPromptId) {
+        cancelAIQuestion(userId)
         waitingLarpers.delete(userId)
         userState.set(userId, { ...user, isLarping: false })
         broadcastOnlineCount()
         return
       }
 
-      // Case 2: has an assigned prompt — put it back
+      // Case 2: has an assigned prompt — put it back (unless it's AI-generated)
       if (user.assignedPromptId) {
         const promptId = user.assignedPromptId
         // Clear assignment timeout
         const timer = activeAssignmentTimeouts.get(userId)
         if (timer) { clearTimeout(timer); activeAssignmentTimeouts.delete(userId) }
         const original = promptRegistry.get(promptId)
-        if (original) {
+        if (original && original.askerUserId !== 'ai') {
           const timeout = scheduleAIFallback(original)
           promptQueue.push({ ...original, timeout })
         }
+        if (original) promptRegistry.delete(promptId)
         activeAssignments.delete(userId)
         waitingLarpers.delete(userId)
         userState.set(userId, { ...user, assignedPromptId: null, isLarping: false })
@@ -458,6 +537,7 @@ export function initSocket(httpServer: HttpServer) {
         userState.set(userId, { ...user, socketId: null, disconnectedAt: Date.now() })
         // Remove from waiting set — will re-add on reconnect if still larping
         waitingLarpers.delete(userId)
+        cancelAIQuestion(userId)
       }
 
       broadcastOnlineCount()
