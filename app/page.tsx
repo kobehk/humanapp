@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { EntryGate } from '@/components/entry-gate'
 import { HumanTab } from '@/components/human-tab'
 import { LarpTab } from '@/components/larp-tab'
+import { AdSlot } from '@/components/ad-slot'
 import { useSocket } from '@/lib/use-socket'
 import type { Tab } from '@/lib/types'
 
@@ -52,13 +53,17 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex" style={{ background: '#e8e8e8' }}>
-      {/* Left ad column */}
-      <div className="flex-1 hidden md:block" />
+      {/* Left ad column — PC only */}
+      <div className="flex-1 hidden md:flex items-start justify-end pt-4 pr-4">
+        <div className="sticky top-4 w-[160px]">
+          <AdSlot className="min-h-[250px]" />
+        </div>
+      </div>
 
       {/* Center content */}
       <div
-        className="flex flex-col relative"
-        style={{ background: '#f9f9f9', flex: '0 0 620px', minWidth: 320 }}
+        className="flex flex-col relative w-full md:w-[620px] md:flex-none"
+        style={{ background: '#f9f9f9' }}
       >
       {!consented && <EntryGate onEnter={handleEnter} />}
 
@@ -134,6 +139,11 @@ export default function Home() {
         )}
       </div>
 
+      {/* Mobile ad slot — above footer */}
+      <div className="md:hidden border-t border-gray-200 px-2 py-2">
+        <AdSlot className="min-h-[50px]" />
+      </div>
+
       {/* Footer */}
       <div className="text-center py-3 text-xs text-gray-400 border-t border-gray-100">
         <p>
@@ -143,8 +153,12 @@ export default function Home() {
       </div>
       </div>{/* end center content */}
 
-      {/* Right ad column */}
-      <div className="flex-1 hidden md:block" />
+      {/* Right ad column — PC only */}
+      <div className="flex-1 hidden md:flex items-start justify-start pt-4 pl-4">
+        <div className="sticky top-4 w-[160px]">
+          <AdSlot className="min-h-[250px]" />
+        </div>
+      </div>
     </div>
   )
 }
