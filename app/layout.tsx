@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,6 +16,17 @@ export default function RootLayout({
     <html lang="zh" className="h-full">
       <body className="min-h-full flex flex-col" style={{ fontFamily: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif' }}>
         {children}
+        <Script id="baidu-tongji" strategy="afterInteractive">
+          {`
+            var _hmt = _hmt || [];
+            (function() {
+              var hm = document.createElement("script");
+              hm.src = "https://hm.baidu.com/hm.js?b86e46242ccd68a89a6d4a35099d0444";
+              var s = document.getElementsByTagName("script")[0];
+              s.parentNode.insertBefore(hm, s);
+            })();
+          `}
+        </Script>
       </body>
     </html>
   );

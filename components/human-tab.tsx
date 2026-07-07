@@ -37,8 +37,16 @@ export function HumanTab({
   const [thinking, setThinking] = useState(false)
   const [text, setText] = useState('')
   const [reportedIds, setReportedIds] = useState<Set<string>>(new Set())
+  const [elapsed, setElapsed] = useState(0)
   const MAX_LEN = 300
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!pendingPrompt) { setElapsed(0); return }
+    setElapsed(0)
+    const t = setInterval(() => setElapsed((e) => e + 1), 1000)
+    return () => clearInterval(t)
+  }, [pendingPrompt])
 
   // Scroll to bottom when new answer arrives
   useEffect(() => {
@@ -87,6 +95,7 @@ export function HumanTab({
               <div className="flex items-center gap-2 text-gray-400 text-sm">
                 <span className="animate-pulse">🧠</span>
                 <span>正在等待回答...</span>
+                <span className="tabular-nums">{Math.floor(elapsed / 60).toString().padStart(2, '0')}:{(elapsed % 60).toString().padStart(2, '0')}</span>
                 <button onClick={onCancel} className="text-xs underline ml-1">取消</button>
               </div>
             </div>

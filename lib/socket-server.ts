@@ -3,6 +3,7 @@ import { Server as HttpServer } from 'http'
 import { v4 as uuidv4 } from 'uuid'
 import type { ServerToClientEvents, ClientToServerEvents, Prompt, AnswerType, RestoredState, Report } from './types'
 import { saveReport, isUserBanned } from './data-store'
+import { generateAIAnswer } from './ai-fallback'
 
 const CREDITS_MAX = 6
 const CREDITS_REFILL_AMOUNT = 2
@@ -98,6 +99,12 @@ function getOnlineCounts() {
     else human++
   })
   const total = human + ai
+  if (total < 10) {
+    const pad = 10 - total + Math.floor(Math.random() * 6)
+    const padAi = Math.floor(pad * 0.6)
+    const padHuman = pad - padAi
+    return { total: total + pad, human: human + padHuman, ai: ai + padAi }
+  }
   return { total, human, ai }
 }
 
@@ -134,14 +141,34 @@ function tryAssignPrompt(userId: string) {
     // Re-queue the prompt so another larper can pick it up
     const original = promptRegistry.get(queued.id)
     if (original) {
-      const timeout = setTimeout(() => {
+      const timeout = setTimeout(async () => {
         const idx = promptQueue.findIndex((p) => p.id === queued.id)
         if (idx !== -1) promptQueue.splice(idx, 1)
         promptRegistry.delete(queued.id)
         const askerUser = userState.get(original.askerUserId)
-        if (askerUser) {
+        if (!askerUser) return
+
+        if (original.answerType === 'image') {
           userState.set(original.askerUserId, { ...askerUser, pendingPromptId: null })
-          emitToUser(original.askerUserId, (s) => s?.emit('error', '等待超时，无人回答'))
+          emitToUser(original.askerUserId, (s) => {
+            s?.emit('error', '暂无画手在线，请稍后再试')
+          })
+        } else {
+          userState.set(original.askerUserId, { ...askerUser, pendingPromptId: null })
+          const aiContent = await generateAIAnswer(original.text)
+          const answer = {
+            promptId: queued.id,
+            content: aiContent,
+            answeredAt: Date.now(),
+            promptText: original.text,
+            answerType: original.answerType,
+          }
+          const current = userState.get(original.askerUserId)
+          if (current?.socketId) {
+            emitToUser(original.askerUserId, (s) => s?.emit('answer_received', answer))
+          } else if (current) {
+            userState.set(original.askerUserId, { ...current, pendingAnswer: answer })
+          }
         }
       }, PROMPT_TIMEOUT)
       promptQueue.push({ ...original, timeout })
@@ -274,13 +301,35 @@ export function initSocket(httpServer: HttpServer) {
         askerUserId: userId,
       }
 
-      const timeout = setTimeout(() => {
+      const timeout = setTimeout(async () => {
         const idx = promptQueue.findIndex((p) => p.id === promptId)
         if (idx !== -1) promptQueue.splice(idx, 1)
         promptRegistry.delete(promptId)
         const u = userState.get(userId)
-        if (u) userState.set(userId, { ...u, pendingPromptId: null })
-        emitToUser(userId, (s) => s?.emit('error', '等待超时，无人回答'))
+        if (!u) return
+
+        if (prompt.answerType === 'image') {
+          userState.set(userId, { ...u, pendingPromptId: null })
+          emitToUser(userId, (s) => {
+            s?.emit('error', '暂无画手在线，请稍后再试')
+          })
+        } else {
+          userState.set(userId, { ...u, pendingPromptId: null })
+          const aiContent = await generateAIAnswer(prompt.text)
+          const answer = {
+            promptId,
+            content: aiContent,
+            answeredAt: Date.now(),
+            promptText: prompt.text,
+            answerType: prompt.answerType,
+          }
+          const current = userState.get(userId)
+          if (current?.socketId) {
+            emitToUser(userId, (s) => s?.emit('answer_received', answer))
+          } else if (current) {
+            userState.set(userId, { ...current, pendingAnswer: answer })
+          }
+        }
       }, PROMPT_TIMEOUT)
 
       promptQueue.push({ ...prompt, timeout })
@@ -380,14 +429,34 @@ export function initSocket(httpServer: HttpServer) {
         if (timer) { clearTimeout(timer); activeAssignmentTimeouts.delete(userId) }
         const original = promptRegistry.get(promptId)
         if (original) {
-          const timeout = setTimeout(() => {
+          const timeout = setTimeout(async () => {
             const idx = promptQueue.findIndex((p) => p.id === promptId)
             if (idx !== -1) promptQueue.splice(idx, 1)
             promptRegistry.delete(promptId)
             const askerUser = userState.get(original.askerUserId)
-            if (askerUser) {
+            if (!askerUser) return
+
+            if (original.answerType === 'image') {
               userState.set(original.askerUserId, { ...askerUser, pendingPromptId: null })
-              emitToUser(original.askerUserId, (s) => s?.emit('error', '等待超时，无人回答'))
+              emitToUser(original.askerUserId, (s) => {
+                s?.emit('error', '暂无画手在线，请稍后再试')
+              })
+            } else {
+              userState.set(original.askerUserId, { ...askerUser, pendingPromptId: null })
+              const aiContent = await generateAIAnswer(original.text)
+              const answer = {
+                promptId,
+                content: aiContent,
+                answeredAt: Date.now(),
+                promptText: original.text,
+                answerType: original.answerType,
+              }
+              const current = userState.get(original.askerUserId)
+              if (current?.socketId) {
+                emitToUser(original.askerUserId, (s) => s?.emit('answer_received', answer))
+              } else if (current) {
+                userState.set(original.askerUserId, { ...current, pendingAnswer: answer })
+              }
             }
           }, PROMPT_TIMEOUT)
           promptQueue.push({ ...original, timeout })
