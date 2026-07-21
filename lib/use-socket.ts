@@ -64,6 +64,9 @@ export function useSocket() {
   const [answerHistory, setAnswerHistory] = useState<ReceivedAnswer[]>([])
   const [pendingPrompt, setPendingPrompt] = useState<{ id: string; text: string; answerType: AnswerType } | null>(null)
   const [isLarping, setIsLarping] = useState(false)
+  // fix 5: tracks only prompts from prompt_assigned events (not restore_state)
+  // so the notification hook can suppress spurious reconnect notifications
+  const [freshlyAssignedPromptId, setFreshlyAssignedPromptId] = useState<string | null>(null)
 
   const pendingPromptRef = useRef(pendingPrompt)
   useEffect(() => { pendingPromptRef.current = pendingPrompt }, [pendingPrompt])
@@ -125,6 +128,7 @@ export function useSocket() {
     socket.on('online_count', setOnlineCount)
     socket.on('prompt_assigned', (prompt) => {
       setAssignedPrompt(prompt)
+      setFreshlyAssignedPromptId(prompt.id)  // fix 5: mark as fresh (not a restore)
     })
     socket.on('prompt_expired', () => {
       setAssignedPrompt(null)
@@ -192,6 +196,7 @@ export function useSocket() {
     lastRefillAt,
     onlineCount,
     assignedPrompt,
+    freshlyAssignedPromptId,
     answerHistory,
     pendingPrompt,
     isLarping,

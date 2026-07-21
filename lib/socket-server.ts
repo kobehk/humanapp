@@ -185,7 +185,7 @@ function tryDispatchToWaitingLarper() {
       const user = userState.get(userId)
       if (!user?.socketId) continue
       tryAssignPrompt(userId)
-      return
+      if (activeAssignments.has(userId)) return  // fix 4: only stop if actually assigned
     }
   }
 }
@@ -238,7 +238,14 @@ function scheduleAIQuestion(userId: string) {
       tryAssignPrompt(userId)
       return
     }
-    const question = await generateAIQuestion()
+    // fix 2: catch errors so the user doesn't get stuck in waitingLarpers forever
+    let question: string
+    try {
+      question = await generateAIQuestion()
+    } catch {
+      if (waitingLarpers.has(userId)) scheduleAIQuestion(userId)
+      return
+    }
     // Re-check after async call
     if (!waitingLarpers.has(userId)) return
     if (activeAssignments.has(userId)) return
@@ -253,11 +260,24 @@ function scheduleAIQuestion(userId: string) {
       askerUserId: 'ai',
     }
     promptRegistry.set(promptId, prompt)
-    // Assign directly — no timeout needed since this is an AI prompt
     activeAssignments.set(userId, promptId)
     waitingLarpers.delete(userId)
     const user = userState.get(userId)
     if (user) userState.set(userId, { ...user, assignedPromptId: promptId })
+
+    // fix 3: AI prompts also need an assignment timeout so a disconnect doesn't leak state
+    const assignmentTimer = setTimeout(() => {
+      if (activeAssignments.get(userId) !== promptId) return
+      activeAssignments.delete(userId)
+      activeAssignmentTimeouts.delete(userId)
+      promptRegistry.delete(promptId)
+      const u = userState.get(userId)
+      if (u) userState.set(userId, { ...u, assignedPromptId: null })
+      emitToUser(userId, (s) => s?.emit('prompt_expired'))
+      if (u?.isLarping) tryAssignPrompt(userId)
+    }, ASSIGNMENT_TIMEOUT)
+    activeAssignmentTimeouts.set(userId, assignmentTimer)
+
     emitToUser(userId, (s) => s?.emit('prompt_assigned', prompt))
   }, delay)
   waitingLarperAITimers.set(userId, timer)
@@ -286,6 +306,16 @@ export function initSocket(httpServer: HttpServer) {
       if (user.pendingAnswer) continue
       if (user.disconnectedAt && now - user.disconnectedAt > EVICT_THRESHOLD) {
         userState.delete(userId)
+        // fix 7: also clean up any lingering assignment state to prevent memory leak
+        const promptId = activeAssignments.get(userId)
+        if (promptId) {
+          const t = activeAssignmentTimeouts.get(userId)
+          if (t) clearTimeout(t)
+          activeAssignmentTimeouts.delete(userId)
+          activeAssignments.delete(userId)
+          const p = promptRegistry.get(promptId)
+          if (p?.askerUserId === 'ai') promptRegistry.delete(promptId)
+        }
       }
     }
   }, EVICT_INTERVAL)
@@ -484,8 +514,11 @@ export function initSocket(httpServer: HttpServer) {
         if (original && original.askerUserId !== 'ai') {
           const timeout = scheduleAIFallback(original)
           promptQueue.push({ ...original, timeout })
+          // fix 1: keep registry entry alive so the next larper's answer can be delivered
+        } else if (original) {
+          // AI-generated prompt: clean up immediately, no one is waiting for the answer
+          promptRegistry.delete(promptId)
         }
-        if (original) promptRegistry.delete(promptId)
         activeAssignments.delete(userId)
         waitingLarpers.delete(userId)
         userState.set(userId, { ...user, assignedPromptId: null, isLarping: false })

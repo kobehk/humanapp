@@ -8,6 +8,7 @@ import { AdSlot } from '@/components/ad-slot'
 import { useSocket } from '@/lib/use-socket'
 import type { ReceivedAnswer } from '@/lib/use-socket'
 import type { Tab } from '@/lib/types'
+import { useNotifications } from '@/lib/use-notifications'
 
 const CONSENT_KEY = 'jiaban_consented'
 const TAB_KEY = 'jiaban_tab'
@@ -23,6 +24,7 @@ export default function Home() {
     lastRefillAt,
     onlineCount,
     assignedPrompt,
+    freshlyAssignedPromptId,
     answerHistory,
     pendingPrompt,
     isLarping,
@@ -47,6 +49,8 @@ export default function Home() {
     localStorage.setItem(CONSENT_KEY, 'true')
     setConsented(true)
   }
+
+  const { enabled: notifEnabled, toggle: toggleNotif, permission: notifPerm, supported: notifSupported } = useNotifications(answerHistory, assignedPrompt, freshlyAssignedPromptId)
 
   const handleSkip = () => {
     skipPrompt()
@@ -172,11 +176,26 @@ export default function Home() {
       </div>
 
       {/* Footer */}
-      <div className="text-center py-3 text-xs text-gray-400 border-t border-gray-100">
+      <div className="text-center py-3 text-xs text-gray-400 border-t border-gray-100 flex flex-col items-center gap-1.5">
         <p>
           {onlineCount.total} 人在线（{onlineCount.human} 普通人 · {onlineCount.ai} AI）
         </p>
         <p className="mt-0.5">人类会犯错，这正是人类独特的地方</p>
+        {notifSupported && (
+          <button
+            onClick={notifPerm !== 'denied' ? toggleNotif : undefined}
+            title={notifPerm === 'denied' ? '已在浏览器中拒绝通知权限，请在地址栏设置中允许' : undefined}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg border text-xs transition-all"
+            style={{
+              borderColor: notifEnabled ? '#1a1a1a' : '#d0d0d0',
+              background: notifEnabled ? '#fde68a' : 'transparent',
+              color: notifPerm === 'denied' ? '#d0d0d0' : notifEnabled ? '#1a1a1a' : '#9ca3af',
+              cursor: notifPerm === 'denied' ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {notifEnabled ? '🔔 关闭通知' : notifPerm === 'denied' ? '🔕 通知被屏蔽' : '🔕 开启通知'}
+          </button>
+        )}
       </div>
 
       {/* Export modal */}
