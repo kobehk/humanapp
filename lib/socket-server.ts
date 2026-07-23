@@ -51,6 +51,7 @@ const promptRegistry = new Map<string, Prompt>()       // promptId -> Prompt
 const waitingLarpers = new Set<string>()               // userIds waiting for a prompt
 const promptAnswerers = new Map<string, string>()      // promptId -> answerer userId
 const waitingLarperAITimers = new Map<string, ReturnType<typeof setTimeout>>() // userId -> AI question timer
+const fallbackAnswerTimers = new Map<string, ReturnType<typeof setTimeout>>() // promptId -> delayed AI answer
 
 function getOrCreateUser(userId: string, socketId: string): UserState {
   let user = userState.get(userId)
@@ -75,12 +76,20 @@ function getOrCreateUser(userId: string, socketId: string): UserState {
 
 function refillCredits(user: UserState): UserState {
   const now = Date.now()
+  // Refill time starts when the balance first drops below the cap, rather than
+  // accumulating while the user is already full.
+  if (user.credits >= CREDITS_MAX) {
+    return { ...user, lastRefillAt: now }
+  }
   const intervals = Math.floor((now - user.lastRefillAt) / CREDITS_REFILL_INTERVAL)
-  if (intervals > 0 && user.credits < CREDITS_MAX) {
+  if (intervals > 0) {
+    const credits = Math.min(CREDITS_MAX, user.credits + intervals * CREDITS_REFILL_AMOUNT)
     return {
       ...user,
-      credits: Math.min(CREDITS_MAX, user.credits + intervals * CREDITS_REFILL_AMOUNT),
-      lastRefillAt: user.lastRefillAt + intervals * CREDITS_REFILL_INTERVAL,
+      credits,
+      lastRefillAt: credits >= CREDITS_MAX
+        ? now
+        : user.lastRefillAt + intervals * CREDITS_REFILL_INTERVAL,
     }
   }
   return user
@@ -92,15 +101,6 @@ function emitToUser(userId: string, fn: (socket: ReturnType<SocketIOServer['sock
   if (!user?.socketId) return
   const socket = io.sockets.sockets.get(user.socketId)
   if (socket) fn(socket)
-}
-
-// Returns the count of online human users (not larping, not assigned)
-function getOnlineHumanCount(): number {
-  let count = 0
-  userState.forEach((user) => {
-    if (user.socketId && !user.isLarping && !user.assignedPromptId) count++
-  })
-  return count
 }
 
 // Returns count of online larpers (larping or assigned)
@@ -160,9 +160,9 @@ function tryAssignPrompt(userId: string) {
     activeAssignments.delete(userId)
     activeAssignmentTimeouts.delete(userId)
     const u = userState.get(userId)
-    if (u) userState.set(userId, { ...u, assignedPromptId: null })
+    if (u) userState.set(userId, { ...u, assignedPromptId: null, isLarping: false })
     // Notify answerer
-    emitToUser(userId, (s) => s?.emit('prompt_expired'))
+    emitToUser(userId, (s) => s?.emit('prompt_expired', { continueLarping: false }))
     // Re-queue the prompt so another larper can pick it up (skip AI-generated prompts)
     const original = promptRegistry.get(queued.id)
     if (original && original.askerUserId !== 'ai') {
@@ -176,6 +176,7 @@ function tryAssignPrompt(userId: string) {
   activeAssignmentTimeouts.set(userId, assignmentTimer)
 
   emitToUser(userId, (s) => s?.emit('prompt_assigned', queued))
+  emitToUser(queued.askerUserId, (s) => s?.emit('prompt_claimed', { promptId: queued.id }))
 }
 
 function tryDispatchToWaitingLarper() {
@@ -196,19 +197,27 @@ function scheduleAIFallback(prompt: Prompt, waitMs = HUMAN_WAIT_TIMEOUT): Return
     if (idx === -1) return
     clearTimeout(promptQueue[idx].timeout)
     promptQueue.splice(idx, 1)
-    promptRegistry.delete(prompt.id)
 
     const delay = AI_DELAY_MIN + Math.random() * (AI_DELAY_MAX - AI_DELAY_MIN)
-    setTimeout(async () => {
+    const answerTimer = setTimeout(async () => {
+      fallbackAnswerTimers.delete(prompt.id)
+      if (!promptRegistry.has(prompt.id)) return
       const askerUser = userState.get(prompt.askerUserId)
-      if (!askerUser) return
+      if (!askerUser || askerUser.pendingPromptId !== prompt.id) {
+        promptRegistry.delete(prompt.id)
+        return
+      }
 
       if (prompt.answerType === 'image') {
+        promptRegistry.delete(prompt.id)
         userState.set(prompt.askerUserId, { ...askerUser, pendingPromptId: null })
         emitToUser(prompt.askerUserId, s => s?.emit('error', '暂无画手在线，请稍后再试'))
       } else {
-        userState.set(prompt.askerUserId, { ...askerUser, pendingPromptId: null })
         const aiContent = await generateAIAnswer(prompt.text)
+        const latest = userState.get(prompt.askerUserId)
+        if (!latest || latest.pendingPromptId !== prompt.id || !promptRegistry.has(prompt.id)) return
+        promptRegistry.delete(prompt.id)
+        userState.set(prompt.askerUserId, { ...latest, pendingPromptId: null })
         const answer = { promptId: prompt.id, content: aiContent, answeredAt: Date.now(), promptText: prompt.text, answerType: prompt.answerType }
         const current = userState.get(prompt.askerUserId)
         if (current?.socketId) {
@@ -218,6 +227,7 @@ function scheduleAIFallback(prompt: Prompt, waitMs = HUMAN_WAIT_TIMEOUT): Return
         }
       }
     }, delay)
+    fallbackAnswerTimers.set(prompt.id, answerTimer)
   }, waitMs)
 }
 
@@ -273,7 +283,7 @@ function scheduleAIQuestion(userId: string) {
       promptRegistry.delete(promptId)
       const u = userState.get(userId)
       if (u) userState.set(userId, { ...u, assignedPromptId: null })
-      emitToUser(userId, (s) => s?.emit('prompt_expired'))
+      emitToUser(userId, (s) => s?.emit('prompt_expired', { continueLarping: true }))
       if (u?.isLarping) tryAssignPrompt(userId)
     }, ASSIGNMENT_TIMEOUT)
     activeAssignmentTimeouts.set(userId, assignmentTimer)
@@ -320,6 +330,22 @@ export function initSocket(httpServer: HttpServer) {
     }
   }, EVICT_INTERVAL)
 
+  // Keep connected clients' credit balances current without requiring a reload
+  // or another user action after the refill countdown reaches zero.
+  setInterval(() => {
+    for (const [userId, current] of userState) {
+      if (!current.socketId) continue
+      const next = refillCredits(current)
+      userState.set(userId, next)
+      if (next.credits !== current.credits) {
+        emitToUser(userId, (s) => s?.emit('credits_update', {
+          credits: next.credits,
+          lastRefillAt: next.lastRefillAt,
+        }))
+      }
+    }
+  }, 1000)
+
   io.on('connection', (socket) => {
     // Client must call identify immediately after connecting
     socket.on('identify', (userId: string) => {
@@ -339,7 +365,8 @@ export function initSocket(httpServer: HttpServer) {
       const pendingPrompt = user.pendingPromptId
         ? (() => {
             const p = promptRegistry.get(user.pendingPromptId)
-            return p ? { id: p.id, text: p.text, answerType: p.answerType } : null
+            const claimed = [...activeAssignments.values()].includes(user.pendingPromptId!)
+            return p ? { id: p.id, text: p.text, answerType: p.answerType, claimed } : null
           })()
         : null
 
@@ -425,14 +452,25 @@ export function initSocket(httpServer: HttpServer) {
       if (!userId) return
       const user = userState.get(userId)
       if (!user?.pendingPromptId) return
+      const isAssigned = [...activeAssignments.values()].includes(user.pendingPromptId)
+      if (isAssigned) {
+        socket.emit('error', '问题已被接单，无法取消')
+        return
+      }
 
       const idx = promptQueue.findIndex((p) => p.id === user.pendingPromptId)
       if (idx !== -1) {
         clearTimeout(promptQueue[idx].timeout)
         promptQueue.splice(idx, 1)
       }
+      const answerTimer = fallbackAnswerTimers.get(user.pendingPromptId)
+      if (answerTimer) {
+        clearTimeout(answerTimer)
+        fallbackAnswerTimers.delete(user.pendingPromptId)
+      }
       promptRegistry.delete(user.pendingPromptId)
       userState.set(userId, { ...user, pendingPromptId: null })
+      socket.emit('prompt_cancelled')
     })
 
     socket.on('submit_answer', ({ promptId, content }) => {
@@ -557,7 +595,6 @@ export function initSocket(httpServer: HttpServer) {
         answererUserId: promptAnswerers.get(promptId) ?? '',
       }
       saveReport(report)
-      console.log('[report]', report)
     })
 
     socket.on('disconnect', () => {

@@ -25,11 +25,16 @@ export function loadReports(): Report[] {
   }
 }
 
-export function saveReport(report: Report) {
+export function saveReport(report: Report): boolean {
   ensureDataDir()
   const all = loadReports()
+  const duplicate = all.some((item) =>
+    item.promptId === report.promptId && item.reporterUserId === report.reporterUserId
+  )
+  if (duplicate) return false
   all.push(report)
   writeFileSync(REPORTS_FILE, JSON.stringify(all, null, 2), 'utf-8')
+  return true
 }
 
 export function loadBans(): Ban[] {

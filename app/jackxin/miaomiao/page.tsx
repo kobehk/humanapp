@@ -45,11 +45,14 @@ export default function AdminPage() {
   useEffect(() => {
     const saved = sessionStorage.getItem(TOKEN_KEY)
     if (!saved) return
-    setToken(saved)
-    fetchData(saved).then((ok) => {
-      if (ok) setAuthed(true)
-      else sessionStorage.removeItem(TOKEN_KEY)
-    })
+    const timer = window.setTimeout(() => {
+      setToken(saved)
+      fetchData(saved).then((ok) => {
+        if (ok) setAuthed(true)
+        else sessionStorage.removeItem(TOKEN_KEY)
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [fetchData])
 
   async function login() {
@@ -77,7 +80,8 @@ export default function AdminPage() {
     setBanningId(null)
   }
 
-  const activeBanSet = new Set(bans.filter(b => b.expiresAt > Date.now()).map(b => b.userId))
+  // The API only returns active bans.
+  const activeBanSet = new Set(bans.map(b => b.userId))
 
   if (!authed) {
     return (

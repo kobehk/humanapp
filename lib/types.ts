@@ -27,7 +27,7 @@ export type Tab = 'human' | 'larp'
 export interface RestoredState {
   credits: number
   lastRefillAt: number
-  pendingPrompt: { id: string; text: string; answerType: AnswerType } | null
+  pendingPrompt: { id: string; text: string; answerType: AnswerType; claimed: boolean } | null
   assignedPrompt: Prompt | null
   isLarping: boolean
   pendingAnswer: (Answer & { promptText: string; answerType: AnswerType }) | null
@@ -36,11 +36,13 @@ export interface RestoredState {
 export interface ServerToClientEvents {
   credits_update: (data: { credits: number; lastRefillAt: number }) => void
   online_count: (data: { total: number; human: number; ai: number }) => void
+  prompt_claimed: (data: { promptId: string }) => void
+  prompt_cancelled: () => void
   prompt_assigned: (prompt: Prompt) => void
   answer_received: (answer: Answer & { promptText: string }) => void
   restore_state: (state: RestoredState) => void
   error: (msg: string) => void
-  prompt_expired: () => void
+  prompt_expired: (data: { continueLarping: boolean }) => void
 }
 
 export interface Report {

@@ -23,14 +23,20 @@ export function AdSlot({ className }: { className?: string }) {
   const loaded = useRef(false)
 
   useEffect(() => {
-    setProvider(pickProvider())
+    const timer = window.setTimeout(() => setProvider(pickProvider()), 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   useEffect(() => {
     if (!provider || loaded.current || !ref.current) return
     loaded.current = true
     try {
-      const w = window as any
+      const w = window as Window & {
+        csj?: { push: (options: { slotId: string; container: HTMLDivElement }) => void }
+        TencentGDT?: {
+          NATIVE: { loadAd: (options: { placementId: string; container: HTMLDivElement }) => void }
+        }
+      }
       if (provider === 'csj' && w.csj) {
         w.csj.push({ slotId: CSJ_SLOT_ID, container: ref.current })
       } else if (provider === 'gdt' && w.TencentGDT) {

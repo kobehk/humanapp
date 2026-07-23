@@ -14,7 +14,11 @@ pnpm dev
 bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:8025](http://localhost:8025) with your browser to see the result.
+
+Copy `.env.example` to
+`.env` and configure `DEEPSEEK_API_KEY` for AI fallback answers and
+`ADMIN_TOKEN` for the `/jackxin/miaomiao` moderation dashboard.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

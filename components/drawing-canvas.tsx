@@ -22,6 +22,7 @@ export function DrawingCanvas({ onSubmit, onBack, title = '随手画' }: Props) 
   const undoStack = useRef<ImageData[]>([])
   const redoStack = useRef<ImageData[]>([])
   const colorInputRef = useRef<HTMLInputElement>(null)
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false })
 
   const getCtx = useCallback(() => {
     const canvas = canvasRef.current
@@ -35,6 +36,7 @@ export function DrawingCanvas({ onSubmit, onBack, title = '随手画' }: Props) 
     if (!canvas || !ctx) return
     undoStack.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height))
     redoStack.current = []
+    setHistoryState({ canUndo: undoStack.current.length > 1, canRedo: false })
   }, [getCtx])
 
   useEffect(() => {
@@ -46,6 +48,7 @@ export function DrawingCanvas({ onSubmit, onBack, title = '随手画' }: Props) 
     // Save initial state
     undoStack.current = [ctx.getImageData(0, 0, canvas.width, canvas.height)]
     redoStack.current = []
+    setHistoryState({ canUndo: false, canRedo: false })
   }, [getCtx])
 
   const getPos = (e: React.MouseEvent | React.TouchEvent) => {
@@ -87,7 +90,6 @@ export function DrawingCanvas({ onSubmit, onBack, title = '随手画' }: Props) 
   const startDraw = (e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault()
     if (tool === 'hand' || tool === 'lasso' || tool === 'fill' || tool === 'pressure') return
-    snapshot()
     setIsDrawing(true)
     const pos = getPos(e)
     lastPos.current = pos
@@ -126,7 +128,10 @@ export function DrawingCanvas({ onSubmit, onBack, title = '随手画' }: Props) 
     setIsDrawing(false)
     lastPos.current = null
     const ctx = getCtx()
-    if (ctx) ctx.globalCompositeOperation = 'source-over'
+    if (ctx) {
+      ctx.globalCompositeOperation = 'source-over'
+      snapshot()
+    }
   }
 
   const undo = () => {
@@ -135,6 +140,10 @@ export function DrawingCanvas({ onSubmit, onBack, title = '随手画' }: Props) 
     if (!canvas || !ctx || undoStack.current.length <= 1) return
     redoStack.current.push(undoStack.current.pop()!)
     ctx.putImageData(undoStack.current[undoStack.current.length - 1], 0, 0)
+    setHistoryState({
+      canUndo: undoStack.current.length > 1,
+      canRedo: redoStack.current.length > 0,
+    })
   }
 
   const redo = () => {
@@ -144,15 +153,19 @@ export function DrawingCanvas({ onSubmit, onBack, title = '随手画' }: Props) 
     const next = redoStack.current.pop()!
     undoStack.current.push(next)
     ctx.putImageData(next, 0, 0)
+    setHistoryState({
+      canUndo: undoStack.current.length > 1,
+      canRedo: redoStack.current.length > 0,
+    })
   }
 
   const clear = () => {
     const canvas = canvasRef.current
     const ctx = getCtx()
     if (!canvas || !ctx) return
-    snapshot()
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
+    snapshot()
   }
 
   const handleSubmit = () => {
@@ -169,8 +182,7 @@ export function DrawingCanvas({ onSubmit, onBack, title = '随手画' }: Props) 
     onSubmit(offscreen.toDataURL('image/png'))
   }
 
-  const canUndo = undoStack.current.length > 1
-  const canRedo = redoStack.current.length > 0
+  const { canUndo, canRedo } = historyState
 
   const toolDefs: { id: Tool; label: string; icon: React.ReactNode; disabled?: boolean }[] = [
     { id: 'pencil', label: '铅笔', icon: <PencilIcon /> },

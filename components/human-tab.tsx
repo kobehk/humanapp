@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react'
 import type { AnswerType } from '@/lib/types'
-import { DrawingCanvas } from './drawing-canvas'
+
+const REPORTED_IDS_KEY = 'jiaban_reported_ids'
 
 interface ReceivedAnswer {
   promptId: string
@@ -15,7 +16,7 @@ interface ReceivedAnswer {
 interface Props {
   credits: number
   lastRefillAt: number
-  pendingPrompt: { text: string; answerType: AnswerType } | null
+  pendingPrompt: { text: string; answerType: AnswerType; claimed: boolean } | null
   answerHistory: ReceivedAnswer[]
   onSubmit: (text: string, answerType: AnswerType, thinking: boolean) => void
   onCancel: () => void
@@ -36,7 +37,14 @@ export function HumanTab({
   const [answerType, setAnswerType] = useState<AnswerType>('text')
   const [thinking, setThinking] = useState(false)
   const [text, setText] = useState('')
-  const [reportedIds, setReportedIds] = useState<Set<string>>(new Set())
+  const [reportedIds, setReportedIds] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set()
+    try {
+      return new Set(JSON.parse(sessionStorage.getItem(REPORTED_IDS_KEY) ?? '[]') as string[])
+    } catch {
+      return new Set()
+    }
+  })
   const [elapsed, setElapsed] = useState(0)
   const MAX_LEN = 300
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -44,14 +52,15 @@ export function HumanTab({
   const startRef = useRef<number>(0)
 
   useEffect(() => {
-    if (!pendingPrompt) { setElapsed(0); return }
+    if (!pendingPrompt) return
     startRef.current = Date.now()
-    setElapsed(0)
     const tick = () => setElapsed(Math.floor((Date.now() - startRef.current) / 1000))
+    const initial = window.setTimeout(tick, 0)
     const t = setInterval(tick, 1000)
     const onVisible = () => { if (!document.hidden) tick() }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
+      clearTimeout(initial)
       clearInterval(t)
       document.removeEventListener('visibilitychange', onVisible)
     }
@@ -85,7 +94,11 @@ export function HumanTab({
               onVote={(v: 'up' | 'down') => onVote(item.promptId, v)}
               onReport={(promptId, content, promptText) => {
                 onReport(promptId, content, promptText)
-                setReportedIds((prev) => new Set(prev).add(promptId))
+                setReportedIds((prev) => {
+                  const next = new Set(prev).add(promptId)
+                  sessionStorage.setItem(REPORTED_IDS_KEY, JSON.stringify([...next]))
+                  return next
+                })
               }}
             />
           ))}
@@ -103,9 +116,11 @@ export function HumanTab({
               </div>
               <div className="flex items-center gap-2 text-gray-400 text-sm">
                 <span className="animate-pulse">🧠</span>
-                <span>正在等待回答...</span>
+                <span>{pendingPrompt.claimed ? '对方正在回答...' : '正在等待回答...'}</span>
                 <span className="tabular-nums">{Math.floor(elapsed / 60).toString().padStart(2, '0')}:{(elapsed % 60).toString().padStart(2, '0')}</span>
-                <button onClick={onCancel} className="text-xs underline ml-1">取消</button>
+                {!pendingPrompt.claimed && (
+                  <button onClick={onCancel} className="text-xs underline ml-1">取消</button>
+                )}
               </div>
             </div>
           )}
@@ -246,15 +261,18 @@ function PromptInput({
   const [secsToRefill, setSecsToRefill] = useState(0)
 
   useEffect(() => {
-    if (credits >= CREDITS_MAX) { setSecsToRefill(0); return }
+    if (credits >= CREDITS_MAX) return
     const calc = () => {
       const elapsed = Date.now() - lastRefillAt
       const msToNext = REFILL_INTERVAL - (elapsed % REFILL_INTERVAL)
       setSecsToRefill(Math.ceil(msToNext / 1000))
     }
-    calc()
+    const initial = window.setTimeout(calc, 0)
     const id = setInterval(calc, 1000)
-    return () => clearInterval(id)
+    return () => {
+      window.clearTimeout(initial)
+      clearInterval(id)
+    }
   }, [credits, lastRefillAt])
 
   return (

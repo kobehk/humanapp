@@ -36,13 +36,18 @@ export default function Home() {
     vote,
     report,
     clearHistory,
+    errorMessage,
+    clearError,
   } = useSocket()
 
   useEffect(() => {
-    const stored = localStorage.getItem(CONSENT_KEY)
-    setConsented(stored === 'true')
-    const savedTab = localStorage.getItem(TAB_KEY)
-    if (savedTab === 'larp' || savedTab === 'human') setTab(savedTab as Tab)
+    const timer = window.setTimeout(() => {
+      const stored = localStorage.getItem(CONSENT_KEY)
+      setConsented(stored === 'true')
+      const savedTab = localStorage.getItem(TAB_KEY)
+      if (savedTab === 'larp' || savedTab === 'human') setTab(savedTab as Tab)
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   const handleEnter = () => {
@@ -120,6 +125,17 @@ export default function Home() {
           >
             ×
           </button>
+        </div>
+      )}
+
+      {errorMessage && (
+        <div
+          role="alert"
+          className="flex items-center justify-between px-4 py-2 text-sm border-b"
+          style={{ background: '#fee2e2', color: '#b91c1c', borderColor: '#fecaca' }}
+        >
+          <span>{errorMessage}</span>
+          <button onClick={clearError} aria-label="关闭错误提示" className="text-lg leading-none">×</button>
         </div>
       )}
 

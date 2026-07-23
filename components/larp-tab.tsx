@@ -23,7 +23,6 @@ export function LarpTab({ assignedPrompt, onSubmitAnswer, onSkip, onStartLarp, i
   const [answer, setAnswer] = useState('')
   const [timeLeft, setTimeLeft] = useState(ANSWER_TIME)
   const [waitElapsed, setWaitElapsed] = useState(0)
-  const [showDrawCanvas, setShowDrawCanvas] = useState(false)
   const [idleView, setIdleView] = useState<IdleView>('default')
   const [gallery, setGallery] = useState<GalleryItem[]>([])
   const answerStartRef = useRef<number>(0)
@@ -34,9 +33,10 @@ export function LarpTab({ assignedPrompt, onSubmitAnswer, onSkip, onStartLarp, i
     if (!assignedPrompt) return
     const total = assignedPrompt.thinking ? ANSWER_TIME_THINKING : ANSWER_TIME
     answerStartRef.current = Date.now()
-    setTimeLeft(total)
-    setAnswer('')
-    setShowDrawCanvas(assignedPrompt.answerType === 'image')
+    const resetTimer = window.setTimeout(() => {
+      setTimeLeft(total)
+      setAnswer('')
+    }, 0)
 
     const tick = () => {
       const elapsed = Math.floor((Date.now() - answerStartRef.current) / 1000)
@@ -46,6 +46,7 @@ export function LarpTab({ assignedPrompt, onSubmitAnswer, onSkip, onStartLarp, i
     const onVisible = () => { if (!document.hidden) tick() }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
+      window.clearTimeout(resetTimer)
       clearInterval(id)
       document.removeEventListener('visibilitychange', onVisible)
     }
@@ -55,12 +56,13 @@ export function LarpTab({ assignedPrompt, onSubmitAnswer, onSkip, onStartLarp, i
   useEffect(() => {
     if (!isLarping || assignedPrompt) return
     waitStartRef.current = Date.now()
-    setWaitElapsed(0)
     const tick = () => setWaitElapsed(Math.floor((Date.now() - waitStartRef.current) / 1000))
+    const initial = window.setTimeout(tick, 0)
     const id = setInterval(tick, 1000)
     const onVisible = () => { if (!document.hidden) tick() }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
+      window.clearTimeout(initial)
       clearInterval(id)
       document.removeEventListener('visibilitychange', onVisible)
     }

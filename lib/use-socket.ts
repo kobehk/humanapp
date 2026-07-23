@@ -58,12 +58,13 @@ export function useSocket() {
   const userIdRef = useRef<string | null>(null)
   const [connected, setConnected] = useState(false)
   const [credits, setCredits] = useState(6)
-  const [lastRefillAt, setLastRefillAt] = useState(Date.now())
+  const [lastRefillAt, setLastRefillAt] = useState(0)
   const [onlineCount, setOnlineCount] = useState({ total: 0, human: 0, ai: 0 })
   const [assignedPrompt, setAssignedPrompt] = useState<Prompt | null>(null)
   const [answerHistory, setAnswerHistory] = useState<ReceivedAnswer[]>([])
-  const [pendingPrompt, setPendingPrompt] = useState<{ id: string; text: string; answerType: AnswerType } | null>(null)
+  const [pendingPrompt, setPendingPrompt] = useState<{ id: string; text: string; answerType: AnswerType; claimed: boolean } | null>(null)
   const [isLarping, setIsLarping] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   // fix 5: tracks only prompts from prompt_assigned events (not restore_state)
   // so the notification hook can suppress spurious reconnect notifications
   const [freshlyAssignedPromptId, setFreshlyAssignedPromptId] = useState<string | null>(null)
@@ -90,6 +91,7 @@ export function useSocket() {
 
     socket.on('restore_state', (state) => {
       const userId = userIdRef.current
+      const cached = userId ? loadHistoryCache(userId) : []
       setCredits(state.credits)
       setLastRefillAt(state.lastRefillAt)
       setAssignedPrompt(state.assignedPrompt)
@@ -104,20 +106,19 @@ export function useSocket() {
           promptText: state.pendingAnswer.promptText,
           receivedAt: state.pendingAnswer.answeredAt ?? Date.now(),
         }
-        const cached = userId ? loadHistoryCache(userId) : []
-        const merged = [...cached, answer]
+        const merged = [...cached.filter((item) => item.promptId !== answer.promptId), answer]
+        answerHistoryRef.current = merged
         setAnswerHistory(merged)
         setPendingPrompt(null)
         if (userId) saveHistoryCache(userId, merged)
       } else if (state.pendingPrompt) {
         setPendingPrompt(state.pendingPrompt)
-        // keep existing history, just don't add to it while waiting
+        answerHistoryRef.current = cached
+        setAnswerHistory(cached)
       } else {
         setPendingPrompt(null)
-        if (userId) {
-          const cached = loadHistoryCache(userId)
-          setAnswerHistory(cached)
-        }
+        answerHistoryRef.current = cached
+        setAnswerHistory(cached)
       }
     })
 
@@ -130,8 +131,22 @@ export function useSocket() {
       setAssignedPrompt(prompt)
       setFreshlyAssignedPromptId(prompt.id)  // fix 5: mark as fresh (not a restore)
     })
-    socket.on('prompt_expired', () => {
+    socket.on('prompt_claimed', ({ promptId }) => {
+      setPendingPrompt((current) => current
+        ? { ...current, id: promptId, claimed: true }
+        : current)
+    })
+    socket.on('prompt_cancelled', () => {
+      setPendingPrompt(null)
+    })
+    socket.on('prompt_expired', ({ continueLarping }) => {
       setAssignedPrompt(null)
+      setIsLarping(continueLarping)
+    })
+    socket.on('error', (message) => {
+      setErrorMessage(message)
+      const userId = userIdRef.current
+      if (userId) socket.emit('identify', userId)
     })
     socket.on('answer_received', (answer) => {
       const received: ReceivedAnswer = {
@@ -142,6 +157,7 @@ export function useSocket() {
         receivedAt: Date.now(),
       }
       const next = [...pruneExpired(answerHistoryRef.current), received]
+      answerHistoryRef.current = next
       setAnswerHistory(next)
       setPendingPrompt(null)
       const userId = userIdRef.current
@@ -153,12 +169,13 @@ export function useSocket() {
 
   const submitPrompt = useCallback((text: string, answerType: AnswerType, thinking: boolean) => {
     socketRef.current?.emit('submit_prompt', { text, answerType, thinking })
-    setPendingPrompt({ id: '', text, answerType })
+    setErrorMessage(null)
+    setPendingPrompt({ id: '', text, answerType, claimed: false })
   }, [])
 
   const cancelPrompt = useCallback(() => {
+    if (pendingPromptRef.current?.claimed) return
     socketRef.current?.emit('cancel_prompt')
-    setPendingPrompt(null)
   }, [])
 
   const submitAnswer = useCallback((promptId: string, content: string) => {
@@ -173,6 +190,7 @@ export function useSocket() {
   }, [])
 
   const startLarp = useCallback(() => {
+    setErrorMessage(null)
     socketRef.current?.emit('start_larp')
     setIsLarping(true)
   }, [])
@@ -208,5 +226,7 @@ export function useSocket() {
     vote,
     report,
     clearHistory,
+    errorMessage,
+    clearError: () => setErrorMessage(null),
   }
 }

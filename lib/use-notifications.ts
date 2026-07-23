@@ -33,9 +33,12 @@ export function useNotifications(
 
   useEffect(() => {
     if (!('Notification' in window)) return
-    setPermission(Notification.permission)
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored === 'true' && Notification.permission === 'granted') setEnabled(true)
+    const timer = window.setTimeout(() => {
+      setPermission(Notification.permission)
+      const stored = localStorage.getItem(STORAGE_KEY)
+      if (stored === 'true' && Notification.permission === 'granted') setEnabled(true)
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   const toggle = async () => {
